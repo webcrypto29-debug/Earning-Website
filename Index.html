@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Earn Rewards Mini App</title>
+  <!-- Telegram WebApp JS -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- Firebase SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+
+  <style>
+    :root {
+      --bg-color: #0d1117;
+      --card-bg: rgba(22, 27, 34, 0.8);
+      --accent-color: #00f2fe;
+      --text-color: #f0f6fc;
+      --btn-grad: linear-gradient(135deg, #00c6ff 0%, #0072ff 100%);
+    }
+
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-color);
+      color: var(--text-color);
+      display: flex;
+      justify-content: center;
+    }
+
+    .app-container {
+      width: 100%;
+      max-width: 480px;
+      min-height: 100vh;
+      padding: 15px;
+      box-sizing: border-box;
+    }
+
+    /* Premium Glassmorphism Card */
+    .card {
+      background: var(--card-bg);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 15px;
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+    }
+
+    .balance-box {
+      text-align: center;
+      background: var(--btn-grad);
+      border-radius: 16px;
+      padding: 20px;
+    }
+
+    .balance-box h2 { margin: 0; font-size: 32px; }
+    .balance-box p { margin: 5px 0 0 0; opacity: 0.9; }
+
+    .btn {
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 12px;
+      background: var(--btn-grad);
+      color: white;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      margin-top: 10px;
+      transition: 0.3s;
+    }
+
+    .btn:active { transform: scale(0.98); }
+
+    .nav-bar {
+      display: flex;
+      justify-content: space-around;
+      position: fixed;
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100%;
+      max-width: 480px;
+      background: #161b22;
+      border-top: 1px solid #30363d;
+      padding: 10px 0;
+    }
+
+    .nav-item {
+      color: #8b949e;
+      text-decoration: none;
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .nav-item.active { color: var(--accent-color); }
+    
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+
+<div class="app-container">
+  
+  <!-- Dashboard Section -->
+  <div id="user-dashboard">
+    <div class="balance-box">
+      <span id="user-name">Loading...</span>
+      <h2 id="user-balance">0</h2>
+      <p>Points (≈ ₹<span id="inr-val">0.00</span>)</p>
+    </div>
+
+    <div class="card" style="margin-top: 15px;">
+      <h3>🎮 Quick Tasks</h3>
+      <div id="tasks-container">
+        <!-- Dynamic Tasks from Admin Panel -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin Panel (Hidden By Default) -->
+  <div id="admin-panel" class="hidden">
+    <div class="card">
+      <h2>⚙️ Admin Control Panel</h2>
+      <hr style="border-color: #30363d;">
+      
+      <h4>Add New Task / Ad Link</h4>
+      <input type="text" id="task-title" placeholder="Task Title" style="width:100%; margin-bottom:8px; padding:8px;">
+      <input type="text" id="task-link" placeholder="Direct Link / Shortener URL" style="width:100%; margin-bottom:8px; padding:8px;">
+      <input type="number" id="task-points" placeholder="Reward Points" style="width:100%; margin-bottom:8px; padding:8px;">
+      <button class="btn" onclick="addNewTask()">Publish Task</button>
+
+      <h4 style="margin-top:20px;">Pending Withdrawals</h4>
+      <div id="withdrawals-list">No pending requests.</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // Telegram WebApp Initialization
+  const tg = window.Telegram.WebApp;
+  tg.expand();
+
+  // 1. Firebase Config (अपनी कुंजी यहाँ बदलें)
+  const firebaseConfig = {
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_PROJECT.firebaseapp.com",
+    projectId: "YOUR_PROJECT_ID",
+    storageBucket: "YOUR_PROJECT.appspot.com",
+    messagingSenderId: "SENDER_ID",
+    appId: "APP_ID"
+  };
+
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.firestore();
+
+  let currentUser = null;
+  const ADMIN_UID = "TELEGRAM_USER_ID_OR_FIREBASE_UID"; // आपकी Admin ID
+
+  // 2. User Authentication / Initialization
+  function initUser() {
+    let userData = tg.initDataUnsafe?.user;
+    
+    // Test user if opened in Browser
+    if (!userData) {
+      userData = { id: "browser_guest", first_name: "Guest User" };
+    }
+
+    document.getElementById('user-name').innerText = userData.first_name;
+
+    const userRef = db.collection('users').doc(String(userData.id));
+    
+    userRef.get().then((doc) => {
+      if (doc.exists) {
+        currentUser = doc.data();
+        updateUI();
+      } else {
+        // Create new user profile
+        currentUser = {
+          uid: String(userData.id),
+          name: userData.first_name,
+          balance: 0,
+          referrals: 0,
+          joinedAt: new Date()
+        };
+        userRef.set(currentUser);
+        updateUI();
+      }
+    });
+
+    // Check if Admin
+    if (String(userData.id) === ADMIN_UID) {
+      document.getElementById('admin-panel').classList.remove('hidden');
+    }
+
+    loadTasks();
+  }
+
+  function updateUI() {
+    document.getElementById('user-balance').innerText = currentUser.balance;
+    // Calculation: 100 Points = ₹1
+    document.getElementById('inr-val').innerText = (currentUser.balance / 100).toFixed(2);
+  }
+
+  // 3. Load Dynamic Tasks from Firebase
+  function loadTasks() {
+    const container = document.getElementById('tasks-container');
+    db.collection('tasks').onSnapshot((snapshot) => {
+      container.innerHTML = '';
+      snapshot.forEach((doc) => {
+        const task = doc.data();
+        container.innerHTML += `
+          <div style="display:flex; justify-shadow:space-between; align-items:center; background:#0d1117; padding:10px; margin-bottom:8px; border-radius:8px;">
+            <div>
+              <strong>${task.title}</strong><br>
+              <small style="color:#00f2fe;">+${task.points} Points</small>
+            </div>
+            <button class="btn" style="width:auto; padding:8px 15px;" onclick="completeTask('${doc.id}', '${task.link}', ${task.points})">Start</button>
+          </div>
+        `;
+      });
+    });
+  }
+
+  // 4. Task Completion Logic
+  function completeTask(taskId, link, points) {
+    window.open(link, '_blank');
+    
+    // Simulate Timer Delay for Ad View Verification
+    setTimeout(() => {
+      db.collection('users').doc(currentUser.uid).update({
+        balance: firebase.firestore.FieldValue.increment(points)
+      }).then(() => {
+        currentUser.balance += points;
+        updateUI();
+        alert(`🎉 Task Complete! You earned ${points} Points.`);
+      });
+    }, 15000); // 15 Seconds Timer
+  }
+
+  // 5. Admin Panel Logic (Add New Tasks)
+  function addNewTask() {
+    const title = document.getElementById('task-title').value;
+    const link = document.getElementById('task-link').value;
+    const points = parseInt(document.getElementById('task-points').value);
+
+    if (title && link && points) {
+      db.collection('tasks').add({
+        title: title,
+        link: link,
+        points: points,
+        createdAt: new Date()
+      }).then(() => {
+        alert('Task Added Successfully!');
+        document.getElementById('task-title').value = '';
+        document.getElementById('task-link').value = '';
+        document.getElementById('task-points').value = '';
+      });
+    }
+  }
+
+  window.onload = initUser;
+</script>
+</body>
+</html>
